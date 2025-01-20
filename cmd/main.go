@@ -1,11 +1,7 @@
 package main
 
-import (
-	"context"
-	"os"
-)
+import "github.com/python357-1/twitter-clone/internal"
 
 func main() {
-	component := hello()
-	component.Render(context.Background(), os.Stdout)
+	internal.CreateServerAndRun(":8080")
 }
