@@ -1,0 +1,12 @@
+package templates
+
+templ Layout(contents templ.Component) {
+    <html>
+        <head>
+            <script src="https://cdn.tailwindcss.com"></script>
+        </head>
+        <body>
+            @contents
+        </body>
+    </html>
+}

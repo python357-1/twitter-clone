@@ -10,8 +10,7 @@ import (
 const (
 	RegularUser = 0
 	AdminUser   = 1
-
-	jwtSecret = "the boys going to the ice cream shop love mustard flavored ice cream"
+	JwtSecret   = "the boys going to the ice cream shop love mustard flavored ice cream"
 )
 
 type TwitterCloneClaims struct {
@@ -24,28 +23,38 @@ type User struct {
 	UserId   string
 }
 
-type AuthService struct {
-	secret string
-}
+type AuthService struct{}
 
-func CreateAuthService(secret string) *AuthService {
-	return &AuthService{
-		secret: secret,
-	}
+func CreateAuthService() *AuthService {
+	return &AuthService{}
 }
 
 func (as *AuthService) CreateJWTForUser(userid string, userType int) string {
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, TwitterCloneClaims{
 		userid,
 		jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * time.Hour)),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * 7 * time.Hour)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 			NotBefore: jwt.NewNumericDate(time.Now()),
 		},
 	})
-	signedToken, err := token.SignedString(jwtSecret)
+	fmt.Println(token)
+	signedToken, err := token.SignedString([]byte(JwtSecret))
+	fmt.Println(signedToken)
 	if err != nil {
-		fmt.Println("FUCK YOUUUUU")
+		fmt.Println(err)
 	}
 	return signedToken
+}
+
+func ValidateJWT(rawJwt string) bool {
+	claims := TwitterCloneClaims{}
+	//TODO: make this just return the parsed token
+	_, err := jwt.ParseWithClaims(rawJwt, &claims, func(_ *jwt.Token) (interface{}, error) { return []byte(JwtSecret), nil })
+	if err != nil {
+		fmt.Println(err)
+		return false
+	}
+
+	return true
 }
