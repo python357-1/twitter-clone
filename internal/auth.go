@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -10,26 +11,27 @@ import (
 const (
 	RegularUser = 0
 	AdminUser   = 1
-	JwtSecret   = "the boys going to the ice cream shop love mustard flavored ice cream"
 )
 
 type TwitterCloneClaims struct {
-	UserId string `json:"userid,omitempty"`
+	UserId int64 `json:"userid,omitempty"`
 	jwt.RegisteredClaims
 }
 
-type User struct {
-	Username string
-	UserId   string
+type AuthService struct {
+	secret string
 }
 
-type AuthService struct{}
-
-func CreateAuthService() *AuthService {
-	return &AuthService{}
+func CreateAuthService(secret string) (*AuthService, error) {
+	if secret == "" {
+		return nil, errors.New("AuthService does not accept an empty string as a secret")
+	}
+	return &AuthService{
+		secret: secret,
+	}, nil
 }
 
-func (as *AuthService) CreateJWTForUser(userid string, userType int) string {
+func (auth *AuthService) CreateJWTForUser(userid int64, userType int) string {
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, TwitterCloneClaims{
 		userid,
 		jwt.RegisteredClaims{
@@ -39,22 +41,32 @@ func (as *AuthService) CreateJWTForUser(userid string, userType int) string {
 		},
 	})
 	fmt.Println(token)
-	signedToken, err := token.SignedString([]byte(JwtSecret))
-	fmt.Println(signedToken)
+	signedToken, err := token.SignedString([]byte(auth.secret))
+	fmt.Printf("create token \"%s\"", signedToken)
 	if err != nil {
 		fmt.Println(err)
 	}
 	return signedToken
 }
 
-func ValidateJWT(rawJwt string) bool {
+func (auth *AuthService) ValidateJWT(rawJwt string) bool {
 	claims := TwitterCloneClaims{}
 	//TODO: make this just return the parsed token
-	_, err := jwt.ParseWithClaims(rawJwt, &claims, func(_ *jwt.Token) (interface{}, error) { return []byte(JwtSecret), nil })
+	_, err := jwt.ParseWithClaims(rawJwt, &claims, func(_ *jwt.Token) (interface{}, error) { return []byte(auth.secret), nil })
 	if err != nil {
 		fmt.Println(err)
 		return false
 	}
 
 	return true
+}
+
+func (auth *AuthService) ParseJWT(rawJwt string) (*TwitterCloneClaims, error) {
+	claims := TwitterCloneClaims{}
+	_, err := jwt.ParseWithClaims(rawJwt, &claims, func(_ *jwt.Token) (interface{}, error) { return []byte(auth.secret), nil })
+
+	if err != nil {
+		return nil, err
+	}
+	return &claims, nil
 }
