@@ -2,7 +2,6 @@ package internal
 
 import (
 	"database/sql"
-	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -102,13 +101,13 @@ func CreateServer(options TwitterCloneServerOptions) (*TwitterCloneServer, error
 		return nil, err
 	}
 
-	if options.CertPath == "" {
-		return nil, errors.New("SSL certificate path must be set to a value (got \"\")")
-	}
+	//if options.CertPath == "" {
+	//	return nil, errors.New("SSL certificate path must be set to a value (got \"\")")
+	//}
 
-	if options.CertPath == "" {
-		return nil, errors.New("SSL private key path must be set to a value (got \"\")")
-	}
+	//if options.CertPath == "" {
+	//	return nil, errors.New("SSL private key path must be set to a value (got \"\")")
+	//}
 
 	db.MustExec(schema)
 
@@ -527,7 +526,7 @@ func (server *TwitterCloneServer) genTimeline(w http.ResponseWriter, r *http.Req
 		query += "AND tweeted < $2"
 	}
 
-	query += "ORDER BY tweeted LIMIT 10"
+	query += "ORDER BY tweeted DESC LIMIT 10"
 
 	var tweets []Tweet
 	if startingId == "" {
@@ -597,7 +596,14 @@ func (server *TwitterCloneServer) Run() {
 
 	*/
 
-	err := http.ListenAndServeTLS(":"+server.port, server.certPath, server.keyPath, nil)
+	var err error
+	if server.certPath == "" || server.keyPath == "" {
+		fmt.Println("running as http because no certificate or private key was supplied")
+		err = http.ListenAndServe(":"+server.port, nil)
+	} else {
+		err = http.ListenAndServeTLS(":"+server.port, server.certPath, server.keyPath, nil)
+	}
+
 	if err != nil {
 		panic(err)
 	}

@@ -9,14 +9,14 @@ import (
 
 func main() {
 	options := internal.TwitterCloneServerOptions{
-		Port:             "8080",
+		Port:             os.Getenv("PORT"),
 		Secret:           os.Getenv("TWTCLONE_JWT_SECRET"),
 		ConnectionString: os.Getenv("TWTCLONE_DBCONNSTRING"),
 		CertPath:         os.Getenv("TWTCLONE_SSL_CERT"),
 		KeyPath:          os.Getenv("TWTCLONE_SSL_KEY"),
 	}
 
-	if true { // for debugging
+	if os.Getenv("DEBUG") != "" {
 		fmt.Println("PORT: ", options.Port)
 		fmt.Println("TWTCLONE_JWT_SECRET: ", options.Secret)
 		fmt.Println("TWTCLONE_DBCONNSTRING: ", options.ConnectionString)
