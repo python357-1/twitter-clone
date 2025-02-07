@@ -287,7 +287,7 @@ func (server *TwitterCloneServer) logout(w http.ResponseWriter, r *http.Request)
 //
 
 //
-// BEGIN "/tweet" --------------------------------------------------------------
+// BEGIN "/tweets" --------------------------------------------------------------
 //
 
 func (server *TwitterCloneServer) createTweet(w http.ResponseWriter, r *http.Request) {
@@ -321,7 +321,7 @@ func (server *TwitterCloneServer) createTweet(w http.ResponseWriter, r *http.Req
 	w.WriteHeader(http.StatusOK)
 }
 
-func (server *TwitterCloneServer) getCurrentUserWithTweets(w http.ResponseWriter, r *http.Request) {
+func (server *TwitterCloneServer) getCurrentUserProfile(w http.ResponseWriter, r *http.Request) {
 	var jwt string
 
 	for _, v := range r.Cookies() {
@@ -348,25 +348,254 @@ func (server *TwitterCloneServer) getCurrentUserWithTweets(w http.ResponseWriter
 	utils.BasicJsonResponse(w, user, http.StatusOK)
 }
 
+func (server *TwitterCloneServer) searchTweets(w http.ResponseWriter, r *http.Request) {
+	err := r.ParseForm()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	authorId := r.Form.Get("by")
+
+	if authorId == "me" {
+		id, err := server.auth.GetUserId(r, TwitterCloneCookieName)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+
+		authorId = strconv.FormatInt(id, 10)
+	}
+
+	var tweets []Tweet
+
+	err = server.db.dbConn.Select(&tweets, "SELECT * FROM tweet WHERE author_id = $1 ORDER BY tweeted DESC", authorId)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	utils.BasicJsonResponse(w, tweets, http.StatusOK)
+}
+
+//
+// END "/tweets" ---------------------------------------------------------------
+//
+
+//
+// BEGIN "/users" --------------------------------------------------------------
+//
+
+func (server *TwitterCloneServer) searchUsers(w http.ResponseWriter, r *http.Request) {
+	err := r.ParseForm()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	query := r.Form.Get("query")
+
+	var people []Person
+
+	err = server.db.dbConn.Select(&people, "SELECT * FROM person WHERE username LIKE $1", query+"%")
+
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	utils.BasicJsonResponse(w, people, http.StatusOK)
+}
+
+func (server *TwitterCloneServer) getUserProfile(w http.ResponseWriter, r *http.Request) {
+	userId, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+
+	person, err := server.db.GetPerson(userId, PersonQueryOptionsBuilder{IncludeTweets: true})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	utils.BasicJsonResponse(w, person, http.StatusOK)
+}
+
+//
+// END "/users" ----------------------------------------------------------------
+//
+
+//
+// BEGIN "/follows" ------------------------------------------------------------
+//
+
+func (server *TwitterCloneServer) followUser(w http.ResponseWriter, r *http.Request) {
+	err := r.ParseForm()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	currentUserId, err := server.auth.GetUserId(r, TwitterCloneCookieName)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	followUserId, err := strconv.ParseInt(r.Form.Get("userid"), 10, 64)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	var follow Follow
+	err = server.db.dbConn.Get(&follow, "SELECT * FROM follow WHERE follower = $1 and followed = $2", currentUserId, followUserId)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			_, err := server.db.dbConn.Exec("INSERT INTO follow (follower, followed) VALUES ($1, $2)", currentUserId, followUserId)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+
+			_, err = server.db.dbConn.Exec("INSERT INTO notification (for_user, triggered_by, type) VALUES ($1, $2, $3)", followUserId, currentUserId, "follow")
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		} else {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+}
+
+func (server *TwitterCloneServer) unfollowUser(w http.ResponseWriter, r *http.Request) {
+	err := r.ParseForm()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	currentUserId, err := server.auth.GetUserId(r, TwitterCloneCookieName)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	followedUserId, err := strconv.ParseInt(r.Form.Get("userid"), 10, 64)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	_, err = server.db.dbConn.Exec("DELETE FROM follow WHERE follower = $1 AND followed = $2", currentUserId, followedUserId)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+}
+
+//
+// END "/follows" --------------------------------------------------------------
+//
+
+func (server *TwitterCloneServer) genTimeline(w http.ResponseWriter, r *http.Request) {
+	err := r.ParseForm()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	currentUserId, err := server.auth.GetUserId(r, TwitterCloneCookieName)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	startingId := r.Form.Get("startingDate")
+
+	query := `
+	SELECT * FROM tweet
+	WHERE author_id in (
+		SELECT person.id FROM person
+		INNER JOIN follow ON follow.followed = person.id
+		WHERE follow.follower = $1
+	)`
+
+	if startingId != "" {
+		query += "AND tweeted < $2"
+	}
+
+	query += "ORDER BY tweeted LIMIT 10"
+
+	var tweets []Tweet
+	if startingId == "" {
+		err = server.db.dbConn.Select(&tweets, query, currentUserId)
+	} else {
+		err = server.db.dbConn.Select(&tweets, query, currentUserId, startingId)
+
+	}
+
+	type timelineResponse struct {
+		Tweets           []Tweet   `json:"Tweets"`
+		NextStartingDate time.Time `json:"nextStartingDate"`
+	}
+
+	if err != nil {
+
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if len(tweets) == 0 {
+		utils.BasicJsonResponse(w, timelineResponse{Tweets: []Tweet{}, NextStartingDate: time.Time{}}, http.StatusOK)
+		return
+	}
+
+	utils.BasicJsonResponse(w, timelineResponse{Tweets: tweets, NextStartingDate: tweets[len(tweets)-1].Tweeted}, http.StatusOK)
+
+}
+
 func (server *TwitterCloneServer) Run() {
-	//http.Handle("/", alice.New(server.logRequest).ThenFunc(func(w http.ResponseWriter, r *http.Request) {
-	//	for _, v := range r.Cookies() {
-	//		if v.Name == TwitterCloneCookieName && server.auth.ValidateJWT(v.Value) {
-	//			//TODO: get person data from db
-	//			fmt.Fprintln(w, "'sall good man")
-	//		}
-	//	}
-
-	//}))
-
 	http.Handle("POST /auth/register", alice.New(server.logRequest).ThenFunc(server.register))
 	http.Handle("POST /auth/login", alice.New(server.logRequest).ThenFunc(server.login))
-	//	http.	 Handle("GET /auth/login")
 	http.HandleFunc("GET /auth/me", server.validateCookie)
 	http.HandleFunc("GET /auth/logout", server.logout)
 
+	http.HandleFunc("GET /tweets", server.searchTweets)
 	http.HandleFunc("POST /tweets/", server.createTweet)
-	http.HandleFunc("GET /tweets/me", server.getCurrentUserWithTweets)
+
+	http.HandleFunc("GET /users/{id}", server.getUserProfile)
+	http.HandleFunc("GET /users", server.searchUsers)
+	http.HandleFunc("GET /users/me", server.getCurrentUserProfile)
+
+	//accepts query param "userid". makes current user follow user with id of "userid" - notify user they have a new follower
+	http.HandleFunc("POST /follows", server.followUser)
+
+	//accepts query param "userid". makes current user unfollow user with id of "userid"
+	http.HandleFunc("DELETE /follows", server.unfollowUser)
+	http.HandleFunc("GET /timeline", server.genTimeline)
+	/*
+
+
+
+
+		returns list of notifications for current user.
+		possibly accept "count" query parameter to just return the number of notifications, and a "unread" bool parameter to return only read/unread notifications
+		http.HandleFunc("GET /notifications")
+
+		redirect to what notification is pointing to (i.e. tweet that was liked, message that was sent, etc)
+		http.HandleFunc("GET /notifications/{id}")
+
+
+		get chats and most recent message for each chat current user has
+		http.HandleFunc("GET /messages")
+
+		get messages, in reverse chronological order, between current user and userid
+		http.HandleFunc("GET /messages/{userid}")
+
+	*/
 
 	err := http.ListenAndServeTLS(":"+server.port, server.certPath, server.keyPath, nil)
 	if err != nil {

@@ -2,6 +2,7 @@ package internal
 
 import (
 	"database/sql"
+	"time"
 
 	"github.com/jmoiron/sqlx"
 )
@@ -10,7 +11,16 @@ var schema = `CREATE TABLE IF NOT EXISTS person (
 	id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
 	username text UNIQUE,
 	password text,
-	email text UNIQUE
+	email text UNIQUE,
+	description text DEFAULT ''::text NOT NULL 
+);
+
+CREATE TABLE IF NOT EXISTS follow (
+	id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+	follower BIGINT references person(id),
+	followed BIGINT references person(id),
+
+	CONSTRAINT cannot_follow_self CHECK (NOT (follower = followed))
 );
 
 CREATE TABLE IF NOT EXISTS tweet (
@@ -18,6 +28,8 @@ CREATE TABLE IF NOT EXISTS tweet (
 	body text,
 	author_id BIGINT NOT NULL,
 	retweeted_tweet_id BIGINT,
+
+	tweeted TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
 	CONSTRAINT fk_tweet_author FOREIGN KEY (author_id) references person(id),
 	CONSTRAINT fk_retweeted_tweet FOREIGN KEY (retweeted_tweet_id) references tweet(id),
@@ -29,6 +41,41 @@ CREATE TABLE IF NOT EXISTS tweet (
 		-- body null and retweeted_tweet_id not null: retweet with no body
 		-- body not null and retweeted_tweet_id not null: retweet with body
 	)
+);
+
+DO $$ BEGIN
+	CREATE TYPE notification_type AS ENUM (
+		'like', 
+		'retweet', 
+		'reply', 
+		'follow', 
+		'message', 
+		'mention', 
+		'quote_tweet'
+	);
+EXCEPTION
+	WHEN duplicate_object THEN NULL;
+END $$;
+
+CREATE TABLE IF NOT EXISTS notification (
+	id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+	for_user BIGINT NOT NULL references person(id),
+	triggered_by BIGINT references person(id),
+	type notification_type NOT NULL,
+	extra_data JSONB,
+
+	created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+	is_read BOOLEAN NOT NULL DEFAULT FALSE
+);
+
+CREATE TABLE IF NOT EXISTS message (
+	id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+	sent_to BIGINT NOT NULL references person(id),
+	sent_from BIGINT NOT NULL references person(id),
+	body text NOT NULL,
+	
+	sent TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+	is_read BOOLEAN DEFAULT FALSE
 );
 `
 
@@ -48,9 +95,16 @@ type Person struct {
 	Username     string `db:"username"`
 	Email        string `db:"email"`
 	PasswordHash string `db:"password" json:"-"` // Password, hashed as SHA256
+	Description  string `db:"description"`
 	Tweets       []Tweet
 	Retweets     []Tweet
 	LikedTweets  []Tweet
+}
+
+type Follow struct {
+	Id         int64 `db:"id"`
+	FollowerId int64 `db:"follower"`
+	FollowedId int64 `db:"followed"`
 }
 
 type Tweet struct {
@@ -59,6 +113,7 @@ type Tweet struct {
 	AuthorId         int64         `db:"author_id"`
 	RetweetedTweetId sql.NullInt64 `db:"retweeted_tweet_id"`
 	Author           Person        `db:"-"`
+	Tweeted          time.Time
 }
 
 type PersonQueryOptionsBuilder struct {

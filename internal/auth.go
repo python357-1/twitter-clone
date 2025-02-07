@@ -3,6 +3,7 @@ package internal
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -69,4 +70,22 @@ func (auth *AuthService) ParseJWT(rawJwt string) (*TwitterCloneClaims, error) {
 		return nil, err
 	}
 	return &claims, nil
+}
+
+func (auth *AuthService) GetUserId(r *http.Request, cookieName string) (int64, error) {
+	var rawJwt string
+	for _, cookie := range r.Cookies() {
+		if cookie.Name == cookieName {
+			rawJwt = cookie.Value
+		}
+	}
+	claims := TwitterCloneClaims{}
+	_, err := jwt.ParseWithClaims(rawJwt, &claims, func(_ *jwt.Token) (interface{}, error) { return []byte(auth.secret), nil })
+
+	if err != nil {
+		fmt.Println(err)
+		fmt.Println(rawJwt)
+		return 0, err
+	}
+	return claims.UserId, nil
 }
