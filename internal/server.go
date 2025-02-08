@@ -159,6 +159,7 @@ func (server *TwitterCloneServer) validateCookie(w http.ResponseWriter, r *http.
 func (server *TwitterCloneServer) register(w http.ResponseWriter, r *http.Request) {
 	err := r.ParseForm()
 	if err != nil {
+		fmt.Println(err.Error())
 		http.Error(w, err.Error(), 500)
 		return
 	}
@@ -222,6 +223,7 @@ func (server *TwitterCloneServer) register(w http.ResponseWriter, r *http.Reques
 func (server *TwitterCloneServer) login(w http.ResponseWriter, r *http.Request) {
 	err := r.ParseForm()
 	if err != nil {
+		fmt.Println(err.Error())
 		http.Error(w, err.Error(), 500)
 		return
 	}
@@ -229,10 +231,12 @@ func (server *TwitterCloneServer) login(w http.ResponseWriter, r *http.Request) 
 	username := r.FormValue("username")
 	password := r.FormValue("password")
 	if username == "" {
+		fmt.Println(err.Error())
 		http.Error(w, "username cannot be empty", 400)
 		return
 	}
 	if password == "" {
+		fmt.Println(err.Error())
 		http.Error(w, "password cannot be empty", 400)
 		return
 	}
@@ -284,6 +288,7 @@ func (server *TwitterCloneServer) logout(w http.ResponseWriter, r *http.Request)
 func (server *TwitterCloneServer) createTweet(w http.ResponseWriter, r *http.Request) {
 	err := r.ParseForm()
 	if err != nil {
+		fmt.Println(err.Error())
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 
@@ -297,6 +302,7 @@ func (server *TwitterCloneServer) createTweet(w http.ResponseWriter, r *http.Req
 
 	claims, err := server.auth.ParseJWT(jwt)
 	if err != nil {
+		fmt.Println(err.Error())
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -305,6 +311,7 @@ func (server *TwitterCloneServer) createTweet(w http.ResponseWriter, r *http.Req
 
 	_, err = server.db.dbConn.Exec("INSERT INTO tweet (body, author_id) VALUES ($1, $2)", tweetText, claims.UserId)
 	if err != nil {
+		fmt.Println(err.Error())
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -323,6 +330,7 @@ func (server *TwitterCloneServer) getCurrentUserProfile(w http.ResponseWriter, r
 
 	claims, err := server.auth.ParseJWT(jwt)
 	if err != nil {
+		fmt.Println(err.Error())
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -332,6 +340,7 @@ func (server *TwitterCloneServer) getCurrentUserProfile(w http.ResponseWriter, r
 
 	user, err := server.db.GetPerson(claims.UserId, options)
 	if err != nil {
+		fmt.Println(err.Error())
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -342,6 +351,7 @@ func (server *TwitterCloneServer) getCurrentUserProfile(w http.ResponseWriter, r
 func (server *TwitterCloneServer) searchTweets(w http.ResponseWriter, r *http.Request) {
 	err := r.ParseForm()
 	if err != nil {
+		fmt.Println(err.Error())
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -351,6 +361,7 @@ func (server *TwitterCloneServer) searchTweets(w http.ResponseWriter, r *http.Re
 	if authorId == "me" {
 		id, err := server.auth.GetUserId(r, TwitterCloneCookieName)
 		if err != nil {
+			fmt.Println(err.Error())
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
 
@@ -361,6 +372,7 @@ func (server *TwitterCloneServer) searchTweets(w http.ResponseWriter, r *http.Re
 
 	err = server.db.dbConn.Select(&tweets, "SELECT * FROM tweet WHERE author_id = $1 ORDER BY tweeted DESC", authorId)
 	if err != nil {
+		fmt.Println(err.Error())
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -379,6 +391,7 @@ func (server *TwitterCloneServer) searchTweets(w http.ResponseWriter, r *http.Re
 func (server *TwitterCloneServer) searchUsers(w http.ResponseWriter, r *http.Request) {
 	err := r.ParseForm()
 	if err != nil {
+		fmt.Println(err.Error())
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -390,6 +403,7 @@ func (server *TwitterCloneServer) searchUsers(w http.ResponseWriter, r *http.Req
 	err = server.db.dbConn.Select(&people, "SELECT * FROM person WHERE username LIKE $1", query+"%")
 
 	if err != nil {
+		fmt.Println(err.Error())
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -400,11 +414,13 @@ func (server *TwitterCloneServer) searchUsers(w http.ResponseWriter, r *http.Req
 func (server *TwitterCloneServer) getUserProfile(w http.ResponseWriter, r *http.Request) {
 	userId, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
+		fmt.Println(err.Error())
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 
 	person, err := server.db.GetPerson(userId, PersonQueryOptionsBuilder{IncludeTweets: true})
 	if err != nil {
+		fmt.Println(err.Error())
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -423,18 +439,21 @@ func (server *TwitterCloneServer) getUserProfile(w http.ResponseWriter, r *http.
 func (server *TwitterCloneServer) followUser(w http.ResponseWriter, r *http.Request) {
 	err := r.ParseForm()
 	if err != nil {
+		fmt.Println(err.Error())
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	currentUserId, err := server.auth.GetUserId(r, TwitterCloneCookieName)
 	if err != nil {
+		fmt.Println(err.Error())
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	followUserId, err := strconv.ParseInt(r.Form.Get("userid"), 10, 64)
 	if err != nil {
+		fmt.Println(err.Error())
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -445,16 +464,19 @@ func (server *TwitterCloneServer) followUser(w http.ResponseWriter, r *http.Requ
 		if err == sql.ErrNoRows {
 			_, err := server.db.dbConn.Exec("INSERT INTO follow (follower, followed) VALUES ($1, $2)", currentUserId, followUserId)
 			if err != nil {
+				fmt.Println(err.Error())
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
 
 			_, err = server.db.dbConn.Exec("INSERT INTO notification (for_user, triggered_by, type) VALUES ($1, $2, $3)", followUserId, currentUserId, "follow")
 			if err != nil {
+				fmt.Println(err.Error())
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
 		} else {
+			fmt.Println(err.Error())
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -464,24 +486,28 @@ func (server *TwitterCloneServer) followUser(w http.ResponseWriter, r *http.Requ
 func (server *TwitterCloneServer) unfollowUser(w http.ResponseWriter, r *http.Request) {
 	err := r.ParseForm()
 	if err != nil {
+		fmt.Println(err.Error())
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	currentUserId, err := server.auth.GetUserId(r, TwitterCloneCookieName)
 	if err != nil {
+		fmt.Println(err.Error())
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	followedUserId, err := strconv.ParseInt(r.Form.Get("userid"), 10, 64)
 	if err != nil {
+		fmt.Println(err.Error())
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	_, err = server.db.dbConn.Exec("DELETE FROM follow WHERE follower = $1 AND followed = $2", currentUserId, followedUserId)
 	if err != nil {
+		fmt.Println(err.Error())
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -494,12 +520,14 @@ func (server *TwitterCloneServer) unfollowUser(w http.ResponseWriter, r *http.Re
 func (server *TwitterCloneServer) genTimeline(w http.ResponseWriter, r *http.Request) {
 	err := r.ParseForm()
 	if err != nil {
+		fmt.Println(err.Error())
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	currentUserId, err := server.auth.GetUserId(r, TwitterCloneCookieName)
 	if err != nil {
+		fmt.Println(err.Error())
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -535,6 +563,7 @@ func (server *TwitterCloneServer) genTimeline(w http.ResponseWriter, r *http.Req
 
 	if err != nil {
 
+		fmt.Println(err.Error())
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
