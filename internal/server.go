@@ -101,14 +101,6 @@ func CreateServer(options TwitterCloneServerOptions) (*TwitterCloneServer, error
 		return nil, err
 	}
 
-	//if options.CertPath == "" {
-	//	return nil, errors.New("SSL certificate path must be set to a value (got \"\")")
-	//}
-
-	//if options.CertPath == "" {
-	//	return nil, errors.New("SSL private key path must be set to a value (got \"\")")
-	//}
-
 	db.MustExec(schema)
 
 	return &TwitterCloneServer{
