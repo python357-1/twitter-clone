@@ -12,7 +12,8 @@ var schema = `CREATE TABLE IF NOT EXISTS person (
 	username text UNIQUE,
 	password text,
 	email text UNIQUE,
-	description text DEFAULT ''::text NOT NULL 
+	description text DEFAULT ''::text NOT NULL,
+	HasProfilePic bool NOT NULL DEFAULT FALSE
 );
 
 CREATE TABLE IF NOT EXISTS follow (
@@ -91,14 +92,15 @@ type TweetComments struct {
 }
 
 type Person struct {
-	Id           int64  `db:"id"`
-	Username     string `db:"username"`
-	Email        string `db:"email"`
-	PasswordHash string `db:"password" json:"-"` // Password, hashed as SHA256
-	Description  string `db:"description"`
-	Tweets       []Tweet
-	Retweets     []Tweet
-	LikedTweets  []Tweet
+	Id            int64  `db:"id"`
+	Username      string `db:"username"`
+	Email         string `db:"email"`
+	PasswordHash  string `db:"password" json:"-"` // Password, hashed as SHA256
+	Description   string `db:"description"`
+	HasProfilePic bool   `db:"hasprofilepic"`
+	Tweets        []Tweet
+	Retweets      []Tweet
+	LikedTweets   []Tweet
 }
 
 type Follow struct {
@@ -114,6 +116,8 @@ type Tweet struct {
 	RetweetedTweetId sql.NullInt64 `db:"retweeted_tweet_id"`
 	Author           Person        `db:"-"`
 	Tweeted          time.Time
+	HasProfilePic    bool // URL
+	AuthorUsername   string
 }
 
 type PersonQueryOptionsBuilder struct {
@@ -139,13 +143,13 @@ func (db *TwitterCloneDB) GetPerson(personId int64, options PersonQueryOptionsBu
 	var person Person
 	var tweets []Tweet
 
-	err := db.dbConn.Get(&person, "SELECT id, username, email FROM person WHERE id = $1", personId)
+	err := db.dbConn.Get(&person, "SELECT id, username, email, description, hasprofilepic FROM person WHERE id = $1", personId)
 
 	if err != nil {
 		return nil, err
 	}
 
-	err = db.dbConn.Select(&tweets, "SELECT * FROM tweet WHERE author_id = $1 AND retweeted_tweet_id IS NULL", personId)
+	err = db.dbConn.Select(&tweets, "SELECT tweet.*, person.username as AuthorUsername, person.HasProfilePic as HasProfilePic FROM tweet INNER JOIN person on person.id = tweet.author_id WHERE author_id = $1 AND retweeted_tweet_id IS NULL", personId)
 	if err != nil {
 		return nil, err
 	}

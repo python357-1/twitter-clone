@@ -1,13 +1,17 @@
 package internal
 
 import (
+	"bytes"
+	"context"
 	"database/sql"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"cloud.google.com/go/storage"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/jmoiron/sqlx"
 	"github.com/justinas/alice"
@@ -17,7 +21,9 @@ import (
 )
 
 const (
-	TwitterCloneCookieName = "twtrCloneCookie"
+	TwitterCloneCookieName        = "twtrCloneCookie"
+	TwitterCloneProfPicBucketName = "twtrclone-prof-pics"
+	ProfilePicsBaseURL            = "https://storage.googleapis.com/twtrclone-prof-pics/"
 )
 
 type TwitterCloneServerOptions struct {
@@ -231,12 +237,10 @@ func (server *TwitterCloneServer) login(w http.ResponseWriter, r *http.Request) 
 	username := r.FormValue("username")
 	password := r.FormValue("password")
 	if username == "" {
-		fmt.Println(err.Error())
 		http.Error(w, "username cannot be empty", 400)
 		return
 	}
 	if password == "" {
-		fmt.Println(err.Error())
 		http.Error(w, "password cannot be empty", 400)
 		return
 	}
@@ -370,7 +374,7 @@ func (server *TwitterCloneServer) searchTweets(w http.ResponseWriter, r *http.Re
 
 	var tweets []Tweet
 
-	err = server.db.dbConn.Select(&tweets, "SELECT * FROM tweet WHERE author_id = $1 ORDER BY tweeted DESC", authorId)
+	err = server.db.dbConn.Select(&tweets, "SELECT tweet.*, person.HasProfilePic as HasProfilePic, person.Username as AuthorUsername FROM tweet INNER JOIN person ON person.id = tweet.author_id WHERE author_id = $1 ORDER BY tweeted DESC", authorId)
 	if err != nil {
 		fmt.Println(err.Error())
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -426,6 +430,96 @@ func (server *TwitterCloneServer) getUserProfile(w http.ResponseWriter, r *http.
 	}
 
 	utils.BasicJsonResponse(w, person, http.StatusOK)
+}
+
+func (server *TwitterCloneServer) updateProfilePic(w http.ResponseWriter, r *http.Request) {
+	err := r.ParseMultipartForm(10 << 20)
+	if err != nil {
+		fmt.Println(err.Error())
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	currentUserId, err := server.auth.GetUserId(r, TwitterCloneCookieName)
+	if err != nil {
+		fmt.Println(err.Error())
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	profPic, _, err := r.FormFile("profPic")
+	if err != nil {
+		fmt.Println(err.Error())
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	defer profPic.Close()
+
+	ctx := context.Background()
+	client, err := storage.NewClient(ctx)
+	if err != nil {
+		fmt.Println(err.Error())
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	defer client.Close()
+
+	fileBytes, err := io.ReadAll(profPic)
+	if err != nil {
+		fmt.Println(err.Error())
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	buf := bytes.NewBuffer(fileBytes)
+
+	ctx, cancel := context.WithTimeout(ctx, time.Second*50)
+	defer cancel()
+
+	wc := client.Bucket(TwitterCloneProfPicBucketName).Object(strconv.FormatInt(currentUserId, 10)).NewWriter(ctx)
+	wc.ChunkSize = 0
+
+	if _, err := io.Copy(wc, buf); err != nil {
+		fmt.Println(err.Error())
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if err := wc.Close(); err != nil {
+		fmt.Println(err.Error())
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
+func (server *TwitterCloneServer) updateBio(w http.ResponseWriter, r *http.Request) {
+	err := r.ParseForm()
+
+	if err != nil {
+		fmt.Println("updateBio: " + err.Error())
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	id, err := server.auth.GetUserId(r, TwitterCloneCookieName)
+
+	if err != nil {
+		fmt.Println("updateBio: " + err.Error())
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	_, err = server.db.dbConn.Exec("UPDATE person SET description = $1 WHERE id = $2", r.Form.Get("description"), id)
+	if err != nil {
+		fmt.Println("updateBio: " + err.Error())
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
 }
 
 //
@@ -535,7 +629,9 @@ func (server *TwitterCloneServer) genTimeline(w http.ResponseWriter, r *http.Req
 	startingId := r.Form.Get("startingDate")
 
 	query := `
-	SELECT * FROM tweet
+	SELECT tweet.*, person.hasprofilepic, person.username as authorusername
+	FROM tweet
+	inner join person on person.id = tweet.author_id
 	WHERE author_id in (
 		SELECT person.id FROM person
 		INNER JOIN follow ON follow.followed = person.id
@@ -589,6 +685,8 @@ func (server *TwitterCloneServer) Run() {
 	http.HandleFunc("GET /users/{id}", server.getUserProfile)
 	http.HandleFunc("GET /users", server.searchUsers)
 	http.HandleFunc("GET /users/me", server.getCurrentUserProfile)
+	http.HandleFunc("POST /users/me/description", server.updateBio)
+	http.HandleFunc("POST /users/me/profile-picture", server.updateProfilePic)
 
 	//accepts query param "userid". makes current user follow user with id of "userid" - notify user they have a new follower
 	http.HandleFunc("POST /follows", server.followUser)
@@ -597,10 +695,6 @@ func (server *TwitterCloneServer) Run() {
 	http.HandleFunc("DELETE /follows", server.unfollowUser)
 	http.HandleFunc("GET /timeline", server.genTimeline)
 	/*
-
-
-
-
 		returns list of notifications for current user.
 		possibly accept "count" query parameter to just return the number of notifications, and a "unread" bool parameter to return only read/unread notifications
 		http.HandleFunc("GET /notifications")
@@ -614,6 +708,9 @@ func (server *TwitterCloneServer) Run() {
 
 		get messages, in reverse chronological order, between current user and userid
 		http.HandleFunc("GET /messages/{userid}")
+
+		delete current profile pic
+		http.HandleFunc("DELETE /users/me/profile-picture")
 
 	*/
 
