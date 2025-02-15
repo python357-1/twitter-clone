@@ -1,23 +1,32 @@
 package internal
 
 import (
+	"bytes"
+	"context"
 	"database/sql"
 	"fmt"
+	"io"
+	"maps"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
+	"cloud.google.com/go/storage"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/jmoiron/sqlx"
 	"github.com/justinas/alice"
+	"github.com/lib/pq"
 	_ "github.com/lib/pq"
 	"github.com/python357-1/twitter-clone/utils"
 	"golang.org/x/crypto/bcrypt"
 )
 
 const (
-	TwitterCloneCookieName = "twtrCloneCookie"
+	TwitterCloneCookieName        = "twtrCloneCookie"
+	TwitterCloneProfPicBucketName = "twtrclone-prof-pics"
+	ProfilePicsBaseURL            = "https://storage.googleapis.com/twtrclone-prof-pics/"
 )
 
 type TwitterCloneServerOptions struct {
@@ -231,12 +240,10 @@ func (server *TwitterCloneServer) login(w http.ResponseWriter, r *http.Request) 
 	username := r.FormValue("username")
 	password := r.FormValue("password")
 	if username == "" {
-		fmt.Println(err.Error())
 		http.Error(w, "username cannot be empty", 400)
 		return
 	}
 	if password == "" {
-		fmt.Println(err.Error())
 		http.Error(w, "password cannot be empty", 400)
 		return
 	}
@@ -356,21 +363,23 @@ func (server *TwitterCloneServer) searchTweets(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	authorId := r.Form.Get("by")
+	author := r.Form.Get("by")
+	var authorId int64
 
-	if authorId == "me" {
-		id, err := server.auth.GetUserId(r, TwitterCloneCookieName)
+	if author == "me" {
+		authorId, err = server.auth.GetUserId(r, TwitterCloneCookieName)
 		if err != nil {
 			fmt.Println(err.Error())
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
-
-		authorId = strconv.FormatInt(id, 10)
+	} else {
+		authorId, err = strconv.ParseInt(author, 10, 64)
+		if err != nil {
+			fmt.Println(err.Error())
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
 	}
-
-	var tweets []Tweet
-
-	err = server.db.dbConn.Select(&tweets, "SELECT * FROM tweet WHERE author_id = $1 ORDER BY tweeted DESC", authorId)
+	tweets, err := server.db.GetTweetsByPersonId(authorId)
 	if err != nil {
 		fmt.Println(err.Error())
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -378,6 +387,169 @@ func (server *TwitterCloneServer) searchTweets(w http.ResponseWriter, r *http.Re
 	}
 
 	utils.BasicJsonResponse(w, tweets, http.StatusOK)
+}
+
+func (server *TwitterCloneServer) likeTweet(w http.ResponseWriter, r *http.Request) {
+	tweetId := r.PathValue("id")
+	personId, err := server.auth.GetUserId(r, TwitterCloneCookieName)
+
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		fmt.Println(err.Error())
+		return
+	}
+
+	tweetLikeResult, err := server.db.dbConn.Exec("INSERT INTO tweet_like (tweet_id, person_id) VALUES ($1, $2)", tweetId, personId)
+	if err != nil && err != sql.ErrNoRows {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		fmt.Println(err.Error())
+		return
+	}
+
+	var likes int
+	err = server.db.dbConn.Get(&likes, "SELECT COUNT(*) FROM tweet_like WHERE tweet_id = $1", tweetId)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		fmt.Println(err.Error())
+		return
+	}
+	if tweetLikeId, err := tweetLikeResult.LastInsertId(); err == nil {
+		var tweeterId int
+		err = server.db.dbConn.Get(&tweeterId, "SELECT author_id FROM tweet WHERE id = $1", tweetId)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			fmt.Println(err.Error())
+			return
+		}
+		_, err = server.db.dbConn.Exec("INSERT INTO notification (for_user, triggered_by, type) VALUES ($1, $2, $3)", tweeterId, tweetLikeId, "like")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			fmt.Println(err.Error())
+			return
+		}
+	}
+
+	utils.BasicJsonResponse(w, struct {
+		Likes   int
+		IsLiked bool
+	}{Likes: likes, IsLiked: true}, http.StatusOK)
+}
+
+func (server *TwitterCloneServer) unlikeTweet(w http.ResponseWriter, r *http.Request) {
+	tweetId := r.PathValue("id")
+	personId, err := server.auth.GetUserId(r, TwitterCloneCookieName)
+
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		fmt.Println(err.Error())
+		return
+	}
+
+	_, err = server.db.dbConn.Exec("DELETE FROM tweet_like WHERE tweet_id = $1 AND person_id = $2", tweetId, personId)
+	if err != nil && err != sql.ErrNoRows {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		fmt.Println(err.Error())
+		return
+	}
+
+	var likes int
+	err = server.db.dbConn.Get(&likes, "SELECT COUNT(*) FROM tweet_like WHERE tweet_id = $1", tweetId)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		fmt.Println(err.Error())
+		return
+	}
+
+	utils.BasicJsonResponse(w, struct {
+		Likes   int
+		IsLiked bool
+	}{Likes: likes, IsLiked: false}, http.StatusOK)
+}
+
+func (server *TwitterCloneServer) retweetTweet(w http.ResponseWriter, r *http.Request) {
+	err := r.ParseForm()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		fmt.Println(err.Error())
+		return
+	}
+	tweetId := r.PathValue("id")
+	personId, err := server.auth.GetUserId(r, TwitterCloneCookieName)
+	retweetBody := r.FormValue("body")
+
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		fmt.Println(err.Error())
+		return
+	}
+
+	query := "INSERT INTO tweet (retweeted_tweet_id, author_id<body_name>) VALUES ($1, $2<body_value>)"
+	params := []any{tweetId, strconv.FormatInt(personId, 10)}
+
+	if retweetBody != "" {
+		query = strings.Replace(query, "<body_name>", ", body", 1)
+		query = strings.Replace(query, "<body_value>", ", $3", 1)
+		params = append(params, retweetBody)
+	} else {
+		query = strings.Replace(query, "<body_name>", "", 1)
+		query = strings.Replace(query, "<body_value>", "", 1)
+	}
+
+	_, err = server.db.dbConn.Exec(query, params...)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		fmt.Println(err.Error())
+		return
+	}
+
+	var retweetCount int
+	err = server.db.dbConn.Get(&retweetCount, "SELECT COUNT(*) FROM tweet WHERE retweeted_tweet_id = $1", tweetId)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		fmt.Println(err.Error())
+		return
+	}
+
+	type RetweetResponse struct {
+		Retweets    int
+		IsRetweeted bool
+	}
+
+	utils.BasicJsonResponse(w, RetweetResponse{Retweets: retweetCount, IsRetweeted: true}, http.StatusOK)
+
+}
+
+func (server *TwitterCloneServer) unretweetTweet(w http.ResponseWriter, r *http.Request) {
+	tweetId := r.PathValue("id")
+	personId, err := server.auth.GetUserId(r, TwitterCloneCookieName)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		fmt.Println(err.Error())
+		return
+	}
+
+	_, err = server.db.dbConn.Exec("DELETE FROM tweet WHERE author_id = $1 AND retweeted_tweet_id = $2", personId, tweetId)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		fmt.Println(err.Error())
+		return
+	}
+
+	var retweetCount int
+	err = server.db.dbConn.Get(&retweetCount, "SELECT COUNT(*) FROM tweet WHERE retweeted_tweet_id = $1", tweetId)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		fmt.Println(err.Error())
+		return
+	}
+
+	type RetweetResponse struct {
+		Retweets    int
+		IsRetweeted bool
+	}
+
+	utils.BasicJsonResponse(w, RetweetResponse{Retweets: retweetCount, IsRetweeted: false}, http.StatusOK)
+
 }
 
 //
@@ -426,6 +598,96 @@ func (server *TwitterCloneServer) getUserProfile(w http.ResponseWriter, r *http.
 	}
 
 	utils.BasicJsonResponse(w, person, http.StatusOK)
+}
+
+func (server *TwitterCloneServer) updateProfilePic(w http.ResponseWriter, r *http.Request) {
+	err := r.ParseMultipartForm(10 << 20)
+	if err != nil {
+		fmt.Println(err.Error())
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	currentUserId, err := server.auth.GetUserId(r, TwitterCloneCookieName)
+	if err != nil {
+		fmt.Println(err.Error())
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	profPic, _, err := r.FormFile("profPic")
+	if err != nil {
+		fmt.Println(err.Error())
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	defer profPic.Close()
+
+	ctx := context.Background()
+	client, err := storage.NewClient(ctx)
+	if err != nil {
+		fmt.Println(err.Error())
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	defer client.Close()
+
+	fileBytes, err := io.ReadAll(profPic)
+	if err != nil {
+		fmt.Println(err.Error())
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	buf := bytes.NewBuffer(fileBytes)
+
+	ctx, cancel := context.WithTimeout(ctx, time.Second*50)
+	defer cancel()
+
+	wc := client.Bucket(TwitterCloneProfPicBucketName).Object(strconv.FormatInt(currentUserId, 10)).NewWriter(ctx)
+	wc.ChunkSize = 0
+
+	if _, err := io.Copy(wc, buf); err != nil {
+		fmt.Println(err.Error())
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if err := wc.Close(); err != nil {
+		fmt.Println(err.Error())
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
+func (server *TwitterCloneServer) updateBio(w http.ResponseWriter, r *http.Request) {
+	err := r.ParseForm()
+
+	if err != nil {
+		fmt.Println("updateBio: " + err.Error())
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	id, err := server.auth.GetUserId(r, TwitterCloneCookieName)
+
+	if err != nil {
+		fmt.Println("updateBio: " + err.Error())
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	_, err = server.db.dbConn.Exec("UPDATE person SET description = $1 WHERE id = $2", r.Form.Get("description"), id)
+	if err != nil {
+		fmt.Println("updateBio: " + err.Error())
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
 }
 
 //
@@ -535,26 +797,86 @@ func (server *TwitterCloneServer) genTimeline(w http.ResponseWriter, r *http.Req
 	startingId := r.Form.Get("startingDate")
 
 	query := `
-	SELECT * FROM tweet
-	WHERE author_id in (
-		SELECT person.id FROM person
-		INNER JOIN follow ON follow.followed = person.id
-		WHERE follow.follower = $1
-	)`
+	select tweet.*,
+	likes,
+	retweets,
+	(case when tweet_like.id is not null then true else false end) as liked,
+	(case when retweet.id is not null then true else false end) as retweeted
+	from (
+		select tweet.id as tweet_id, count(tweet_like.*) as likes, count(retweets.*) as retweets
+		from tweet
+		left join tweet_like on tweet_like.tweet_id = tweet.id
+		left join tweet as retweets on retweets.retweeted_tweet_id = tweet.id
+		where tweet.author_id in (
+			SELECT person.id FROM person
+			INNER JOIN follow ON follow.followed = person.id
+			WHERE follow.follower = $1 <and_subquery>
+		)
+		group by tweet.id
+	) a
+	inner join tweet on tweet.id = a.tweet_id
+	left join tweet_like on tweet_like.tweet_id = tweet.id and tweet_like.person_id = $1
+	left join tweet as retweet on retweet.retweeted_tweet_id = tweet.id
+	ORDER BY tweeted DESC LIMIT 10
+	`
 
 	if startingId != "" {
-		query += "AND tweeted < $2"
+		query = strings.Replace(query, "<and_subquery>", "AND tweeted < $2", 1)
+	} else {
+		query = strings.Replace(query, "<and_subquery>", "", 1)
 	}
-
-	query += "ORDER BY tweeted DESC LIMIT 10"
 
 	var tweets []Tweet
 	if startingId == "" {
 		err = server.db.dbConn.Select(&tweets, query, currentUserId)
 	} else {
 		err = server.db.dbConn.Select(&tweets, query, currentUserId, startingId)
-
 	}
+
+	retweetedTweets := make(map[int64]int64)
+	for _, tweet := range tweets {
+		if tweet.RetweetedTweetId.Valid {
+			value, _ := tweet.RetweetedTweetId.Value()
+			retweetedTweets[tweet.Id] = value.(int64)
+		}
+	}
+
+	if len(retweetedTweets) > 0 {
+		var retweets []Tweet
+		query := `
+		select tweet.*, likes, retweets from (
+			SELECT tweet.id as tweetid, count(tweet_like.id) as likes, count(retweets.*) as retweets
+			from tweet
+			left join tweet_like on tweet_like.tweet_id = tweet.id
+			left join tweet as retweets on retweets.retweeted_tweet_id = tweet.id
+			WHERE tweet.id = ANY($1)
+			GROUP BY tweet.id
+		)
+		inner join tweet on tweetid = tweet.id
+		`
+		err := server.db.dbConn.Select(&retweets, query, pq.Array(slices.Collect(maps.Values(retweetedTweets))))
+		if err != nil {
+			fmt.Println(err.Error())
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		for index, tweet := range tweets {
+			if !tweet.RetweetedTweetId.Valid {
+				continue
+			}
+
+			retweetedId := retweetedTweets[tweet.Id]
+			for _, retweet := range retweets {
+				if retweet.Id == retweetedId {
+					tweets[index].RetweetedTweet = &retweet
+				}
+
+			}
+		}
+	}
+
+	fmt.Printf("%#v\n", tweets)
 
 	type timelineResponse struct {
 		Tweets           []Tweet   `json:"Tweets"`
@@ -585,10 +907,16 @@ func (server *TwitterCloneServer) Run() {
 
 	http.HandleFunc("GET /tweets", server.searchTweets)
 	http.HandleFunc("POST /tweets/", server.createTweet)
+	http.HandleFunc("POST /tweets/{id}/like", server.likeTweet)
+	http.HandleFunc("DELETE /tweets/{id}/like", server.unlikeTweet)
+	http.HandleFunc("POST /tweets/{id}/retweet", server.retweetTweet)
+	http.HandleFunc("DELETE /tweets/{id}/retweet", server.unretweetTweet)
 
 	http.HandleFunc("GET /users/{id}", server.getUserProfile)
 	http.HandleFunc("GET /users", server.searchUsers)
 	http.HandleFunc("GET /users/me", server.getCurrentUserProfile)
+	http.HandleFunc("POST /users/me/description", server.updateBio)
+	http.HandleFunc("POST /users/me/profile-picture", server.updateProfilePic)
 
 	//accepts query param "userid". makes current user follow user with id of "userid" - notify user they have a new follower
 	http.HandleFunc("POST /follows", server.followUser)
@@ -597,10 +925,6 @@ func (server *TwitterCloneServer) Run() {
 	http.HandleFunc("DELETE /follows", server.unfollowUser)
 	http.HandleFunc("GET /timeline", server.genTimeline)
 	/*
-
-
-
-
 		returns list of notifications for current user.
 		possibly accept "count" query parameter to just return the number of notifications, and a "unread" bool parameter to return only read/unread notifications
 		http.HandleFunc("GET /notifications")
@@ -614,6 +938,9 @@ func (server *TwitterCloneServer) Run() {
 
 		get messages, in reverse chronological order, between current user and userid
 		http.HandleFunc("GET /messages/{userid}")
+
+		delete current profile pic
+		http.HandleFunc("DELETE /users/me/profile-picture")
 
 	*/
 
