@@ -124,6 +124,7 @@ type Tweet struct {
 	Body             string        `db:"body"`
 	AuthorId         int64         `db:"author_id"`
 	RetweetedTweetId sql.NullInt64 `db:"retweeted_tweet_id"`
+	RetweetedTweet   *Tweet        `db:"-" json:"RetweetedTweet"`
 	Author           Person        `db:"-"`
 	Liked            bool          `db:"liked"`
 	Likes            int           `db:"likes"`

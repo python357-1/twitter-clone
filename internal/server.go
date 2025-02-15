@@ -6,7 +6,9 @@ import (
 	"database/sql"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -15,6 +17,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/jmoiron/sqlx"
 	"github.com/justinas/alice"
+	"github.com/lib/pq"
 	_ "github.com/lib/pq"
 	"github.com/python357-1/twitter-clone/utils"
 	"golang.org/x/crypto/bcrypt"
@@ -828,8 +831,52 @@ func (server *TwitterCloneServer) genTimeline(w http.ResponseWriter, r *http.Req
 		err = server.db.dbConn.Select(&tweets, query, currentUserId)
 	} else {
 		err = server.db.dbConn.Select(&tweets, query, currentUserId, startingId)
-
 	}
+
+	retweetedTweets := make(map[int64]int64)
+	for _, tweet := range tweets {
+		if tweet.RetweetedTweetId.Valid {
+			value, _ := tweet.RetweetedTweetId.Value()
+			retweetedTweets[tweet.Id] = value.(int64)
+		}
+	}
+
+	if len(retweetedTweets) > 0 {
+		var retweets []Tweet
+		query := `
+		select tweet.*, likes, retweets from (
+			SELECT tweet.id as tweetid, count(tweet_like.id) as likes, count(retweets.*) as retweets
+			from tweet
+			left join tweet_like on tweet_like.tweet_id = tweet.id
+			left join tweet as retweets on retweets.retweeted_tweet_id = tweet.id
+			WHERE tweet.id = ANY($1)
+			GROUP BY tweet.id
+		)
+		inner join tweet on tweetid = tweet.id
+		`
+		err := server.db.dbConn.Select(&retweets, query, pq.Array(slices.Collect(maps.Values(retweetedTweets))))
+		if err != nil {
+			fmt.Println(err.Error())
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		for index, tweet := range tweets {
+			if !tweet.RetweetedTweetId.Valid {
+				continue
+			}
+
+			retweetedId := retweetedTweets[tweet.Id]
+			for _, retweet := range retweets {
+				if retweet.Id == retweetedId {
+					tweets[index].RetweetedTweet = &retweet
+				}
+
+			}
+		}
+	}
+
+	fmt.Printf("%#v\n", tweets)
 
 	type timelineResponse struct {
 		Tweets           []Tweet   `json:"Tweets"`
