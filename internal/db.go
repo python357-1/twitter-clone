@@ -8,6 +8,16 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
+const (
+	NOTIFICATION_TYPE_LIKE        = 1
+	NOTIFICATION_TYPE_RETWEET     = 2
+	NOTIFICATION_TYPE_REPLY       = 3
+	NOTIFICATION_TYPE_FOLLOW      = 4
+	NOTIFICATION_TYPE_MESSAGE     = 5
+	NOTIFICATION_TYPE_MENTION     = 6
+	NOTIFICATION_TYPE_QUOTE_TWEET = 7
+)
+
 var schema = `CREATE TABLE IF NOT EXISTS person (
 	id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
 	username text UNIQUE,
@@ -135,6 +145,16 @@ type Tweet struct {
 	AuthorUsername   string
 }
 
+type Notification struct {
+	Id          int64     `db:"id"`
+	ForUser     int64     `db:"for_user"`
+	TriggeredBy int64     `db:"triggered_by"`
+	Type        string    `db:"type"`
+	ExtraData   string    `db:"extra_data"`
+	CreatedAt   time.Time `db:"created_at"`
+	IsRead      bool      `db:"is_read"`
+}
+
 type PersonQueryOptionsBuilder struct {
 	IncludeTweets bool
 }
@@ -212,4 +232,26 @@ func (db *TwitterCloneDB) GetPerson(personId int64, options PersonQueryOptionsBu
 
 	}
 	return &person, nil
+}
+
+func (db *TwitterCloneDB) GetNotifications(personId int64) (*[]Notification, error) {
+	var notifications []Notification
+	query := `
+	select
+		id,
+		for_user,
+		triggered_by,
+		type,
+		COALESCE(extra_data, '{}') as extra_data,
+		created_at,
+		is_read
+	from notification
+	where for_user = $1;`
+	err := db.dbConn.Select(&notifications, query, personId)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return &notifications, nil
 }

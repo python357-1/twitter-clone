@@ -779,6 +779,32 @@ func (server *TwitterCloneServer) unfollowUser(w http.ResponseWriter, r *http.Re
 // END "/follows" --------------------------------------------------------------
 //
 
+//
+// BEGIN "/notifications" ------------------------------------------------------
+//
+
+func (server *TwitterCloneServer) getCurrentUserNotifications(w http.ResponseWriter, r *http.Request) {
+	userId, err := server.auth.GetUserId(r, TwitterCloneCookieName)
+	if err != nil {
+		fmt.Println(err.Error())
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	notifications, err := server.db.GetNotifications(userId)
+	if err != nil {
+		fmt.Println(err.Error())
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	utils.BasicJsonResponse(w, notifications, http.StatusOK)
+}
+
+//
+// END "/notifications" --------------------------------------------------------
+//
+
 func (server *TwitterCloneServer) genTimeline(w http.ResponseWriter, r *http.Request) {
 	err := r.ParseForm()
 	if err != nil {
@@ -924,10 +950,11 @@ func (server *TwitterCloneServer) Run() {
 	//accepts query param "userid". makes current user unfollow user with id of "userid"
 	http.HandleFunc("DELETE /follows", server.unfollowUser)
 	http.HandleFunc("GET /timeline", server.genTimeline)
+
+	http.HandleFunc("GET /notifications", server.getCurrentUserNotifications)
 	/*
 		returns list of notifications for current user.
 		possibly accept "count" query parameter to just return the number of notifications, and a "unread" bool parameter to return only read/unread notifications
-		http.HandleFunc("GET /notifications")
 
 		redirect to what notification is pointing to (i.e. tweet that was liked, message that was sent, etc)
 		http.HandleFunc("GET /notifications/{id}")
